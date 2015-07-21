@@ -11,6 +11,7 @@
       <th><%= t('Name') %></th>
       <th><%= t('Cron') %></th>
       <th><%= t('Last enque') %></th>
+      <th><%= t('Job Id') %></th>
       <th><%= t('Arguments') %></th>
       <th width="280"><%= t('Actions')%></th>
     </thead>
@@ -23,6 +24,7 @@
           <td style="<%= style %>"><%= job.name %></td>
           <td style="<%= style %>"><b><%= job.cron.gsub(" ", "&nbsp;") %></b></td>
           <td style="<%= style %>"><%= job.last_enqueue_time ? relative_time(job.last_enqueue_time) : "-" %></td>
+          <td style="<%= style %>"><%= job.last_job_id || "-" %><%= job.instance_variable_get(:@queue) %></td>
           <td style="<%= style %>">
             <% if job.message and job.message.to_s.size > 100 %>
               <button data-toggle="collapse" data-target=".worker_<%= index %>" class="btn btn-xs"><%= t('ShowAll')%></button>

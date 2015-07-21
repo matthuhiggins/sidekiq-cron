@@ -43,13 +43,14 @@ module Sidekiq
 
       #enque cron job to queue
       def enque! time = Time.now
-        @last_enqueue_time = time
-
         if defined?(ActiveJob::Base) && @klass.to_s.constantize < ActiveJob::Base
-          Sidekiq::Client.push(active_job_message)
+          job_message = active_job_message
         else
-          Sidekiq::Client.push(sidekiq_worker_message)
+          job_message = sidekiq_worker_message
         end
+
+        @last_enqueue_time = time
+        @last_job_id = Sidekiq::Client.push(job_message)
 
         save
         logger.debug { "enqueued #{@name}: #{@message}" }
@@ -191,13 +192,14 @@ module Sidekiq
       end
 
       attr_accessor :name, :cron, :klass, :args, :message
-      attr_reader   :last_enqueue_time
+      attr_reader   :last_enqueue_time, :last_job_id
 
       def initialize input_args = {}
         args = input_args.stringify_keys
 
-        @name = args["name"]
-        @cron = args["cron"]
+        @name         = args["name"]
+        @cron         = args["cron"]
+        @last_job_id  = args['last_job_id']
 
         #get class from klass or class
         @klass = args["klass"] || args["class"]
@@ -286,6 +288,22 @@ module Sidekiq
         out
       end
 
+      def already_in_progress?
+        already_queued? || already_working?
+      end
+
+      def already_queued?
+        queue = Sidekiq::Queue.new(@queue || 'default')
+        queue.any? { |job| job.jid == @last_job_id }
+      end
+
+      def already_working?
+        workers = Sidekiq::Workers.new
+        workers.any? do |process_id, thread_id, work|
+          work['payload']['jid'] == @last_job_id
+        end
+      end
+
       #export job data to hash
       def to_hash
         {
@@ -296,6 +314,7 @@ module Sidekiq
           message: @message.is_a?(String) ? @message : Sidekiq.dump_json(@message || {}),
           status: @status,
           last_enqueue_time: @last_enqueue_time,
+          last_job_id: @last_job_id
         }
       end
 
