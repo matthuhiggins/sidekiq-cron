@@ -17,7 +17,10 @@ module Sidekiq
       def should_enque? time
         enqueue = false
         enqueue = Sidekiq.redis do |conn|
-          status == "enabled" && not_enqueued_after?(time) && conn.zadd(job_enqueued_key, time.to_f.to_s, formated_last_time(time))
+          status == "enabled" &&
+            already_in_progress? &&
+            not_enqueued_after?(time) &&
+            conn.zadd(job_enqueued_key, time.to_f.to_s, formated_last_time(time))
         end
         enqueue
       end
