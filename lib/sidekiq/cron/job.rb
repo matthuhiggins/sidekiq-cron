@@ -17,7 +17,10 @@ module Sidekiq
       def should_enque? time
         enqueue = false
         enqueue = Sidekiq.redis do |conn|
-          status == "enabled" && not_enqueued_after?(time) && conn.zadd(job_enqueued_key, time.to_f.to_s, formated_last_time(time))
+          status == "enabled" &&
+            not_enqueued_after?(time) &&
+            !already_in_progress? &&
+            conn.zadd(job_enqueued_key, time.to_f.to_s, formated_last_time(time))
         end
         enqueue
       end
@@ -43,13 +46,14 @@ module Sidekiq
 
       #enque cron job to queue
       def enque! time = Time.now
-        @last_enqueue_time = time
-
         if defined?(ActiveJob::Base) && @klass.to_s.constantize < ActiveJob::Base
-          Sidekiq::Client.push(active_job_message)
+          job_message = active_job_message
         else
-          Sidekiq::Client.push(sidekiq_worker_message)
+          job_message = sidekiq_worker_message
         end
+
+        @last_enqueue_time = time
+        @last_job_id = Sidekiq::Client.push(job_message)
 
         save
         logger.debug { "enqueued #{@name}: #{@message}" }
@@ -191,19 +195,20 @@ module Sidekiq
       end
 
       attr_accessor :name, :cron, :klass, :args, :message
-      attr_reader   :last_enqueue_time
+      attr_reader   :last_enqueue_time, :last_job_id
 
       def initialize input_args = {}
         args = input_args.stringify_keys
 
-        @name = args["name"]
-        @cron = args["cron"]
+        @name         = args["name"]
+        @cron         = args["cron"]
 
         #get class from klass or class
         @klass = args["klass"] || args["class"]
 
         #set status of job
         @status = args['status'] || status_from_redis
+        @last_job_id = args['last_job_id']
 
         #set last enqueue time - from args or from existing job
         if args['last_enqueue_time'] && !args['last_enqueue_time'].empty?
@@ -267,36 +272,60 @@ module Sidekiq
       end
 
       def status_from_redis
-        out = "enabled"
+        last_value_from_redis('status') || 'enabled'
+      end
+
+      def last_enqueue_time_from_redis
+        if value = last_value_from_redis('last_enqueue_time')
+          Time.parse(value) rescue nil
+        end
+      end
+
+      def last_job_id_from_redis
+        last_value_from_redis 'last_job_id'
+      end
+
+      def last_value_from_redis(key)
+        out = nil
         if exists?
           Sidekiq.redis do |conn|
-            out = conn.hget redis_key, "status"
+            conn.hget(redis_key, key)
           end
         end
         out
       end
 
-      def last_enqueue_time_from_redis
-        out = nil
-        if exists?
-          Sidekiq.redis do |conn|
-            out = Time.parse(conn.hget(redis_key, "last_enqueue_time")) rescue nil
-          end
+      def already_in_progress?
+        already_queued?(Sidekiq::Queue) || already_queued?(Sidekiq::RetrySet) || already_working?
+      end
+
+      def already_queued?(queue_class)
+        queue = queue_class.new(@queue || 'default')
+        queue.any? { |job| job.jid == @last_job_id }
+      end
+
+      def already_working?
+        workers = Sidekiq::Workers.new
+        workers.any? do |process_id, thread_id, work|
+          work['payload']['jid'] == @last_job_id
         end
-        out
       end
 
       #export job data to hash
       def to_hash
-        {
+        result = {
           name: @name,
           klass: @klass,
           cron: @cron,
           args: @args.is_a?(String) ? @args : Sidekiq.dump_json(@args || []),
           message: @message.is_a?(String) ? @message : Sidekiq.dump_json(@message || {}),
           status: @status,
-          last_enqueue_time: @last_enqueue_time,
+          last_enqueue_time: @last_enqueue_time
         }
+
+        result[:last_job_id] = @last_job_id if @last_job_id
+
+        result
       end
 
       def errors
